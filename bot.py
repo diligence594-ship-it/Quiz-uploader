@@ -5,8 +5,8 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # Credentials
-API_ID = int(os.environ.get("API_ID", "12345678"))
-API_HASH = os.environ.get("API_HASH", "your_api_hash")
+API_ID = int(os.environ.get("API_ID", "22470912"))
+API_HASH = os.environ.get("API_HASH", "511be78079ed5d4bd4c967bc7b5ee023")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
 
 app = Client("quiz_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
