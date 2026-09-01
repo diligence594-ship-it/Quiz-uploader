@@ -41,12 +41,13 @@ AWAITING_CHAT_ID = set()    # Tracks users who clicked "Save Chat ID" button
 
 def parse_quiz_file(file_content: str) -> list:
     """
-    Parses pipe-separated quizzes where options are comma-separated inside part 1:
-    Question | Opt1, Opt2, Opt3, Opt4 | Ans | Explanation
+    Parses single-line pipe-separated quizzes:
+    Question | Option 1, Option 2, Option 3, Option 4 | Right Answer | Explanation
     """
     quizzes = []
     lines = file_content.strip().split('\n')
 
+    # Telegram send_poll strictly requires 0-based indexing (A=0, B=1, C=2, D=3)
     option_map = {
         'A': 0, 'B': 1, 'C': 2, 'D': 3,
         '1': 0, '2': 1, '3': 2, '4': 3
@@ -60,35 +61,37 @@ def parse_quiz_file(file_content: str) -> list:
         parts = [p.strip() for p in line.split('|')]
 
         if len(parts) >= 3:
-            # 1. Clean Question Text
+            # 1. Clean Question Text (Remove Q1., Q2., etc.)
             raw_q = parts[0]
             question_text = re.sub(r'^Q\d+\.\s*', '', raw_q)
 
-            # 2. Extract Options (Handles comma-separated options in pipe part 1)
+            # 2. Extract & Clean Options
             raw_options_str = parts[1]
             raw_options_list = raw_options_str.split(',')
 
             options = []
             for opt in raw_options_list:
-                # Remove prefixes like "A) ", "B) ", "1. ", "A. " cleanly
+                # Strictly strip prefixes like "A) ", "B) ", "A. ", "1) "
                 clean_opt = re.sub(r'^[A-Da-d0-4][\.\)\-\s]\s*', '', opt.strip())
                 if clean_opt:
                     options.append(clean_opt)
 
-            # 3. Extract Correct Answer
+            # 3. Extract & Clean Correct Answer Character (A/B/C/D)
             raw_ans = parts[2].strip().upper()
             ans_clean = re.sub(r'[^A-D1-4]', '', raw_ans)
+            
+            # Map 'A'->0, 'B'->1, 'C'->2, 'D'->3
             correct_id = option_map.get(ans_clean, 0)
 
-            # 4. Extract Explanation (Optional)
+            # 4. Extract Explanation
             explanation = parts[3].strip() if len(parts) > 3 else ""
 
-            # Validate options count (Telegram requires 2 to 10 options)
+            # Ensure valid options and correct index range
             if question_text and len(options) >= 2 and correct_id < len(options):
                 quizzes.append({
                     "question": question_text,
                     "options": options,
-                    "correct_option_id": correct_id,
+                    "correct_option_id": int(correct_id), # Strictly passing 0, 1, 2, or 3
                     "explanation": explanation[:200]
                 })
 
@@ -250,7 +253,7 @@ async def start_quiz_process(client: Client, union_obj):
                     question=f"{idx}. {q['question']}",
                     options=q['options'],
                     type="quiz",
-                    correct_option_id=int(q['correct_option_id']),
+                    correct_option_id=q['correct_option_id'], # Strict integer passing (0 for A, 1 for B, 2 for C, 3 for D)
                     explanation=q.get('explanation', ''),
                     is_anonymous=True
                 )
