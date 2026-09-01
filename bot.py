@@ -37,54 +37,56 @@ app = Client("quiz_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BO
 USER_CHAT_CONFIG = {}       # Stores target chat_id per user
 USER_ACTIVE_FILES = {}      # Stores uploaded document references
 STOP_TASKS = {}             # Tracks active upload loops for /stop command
+AWAITING_CHAT_ID = set()    # Tracks users who clicked "Save Chat ID" button
 
 
 def parse_quiz_file(file_content: str) -> list:
+    """
+    Parses single-line pipe-separated quizzes:
+    Question | Option 1 | Option 2 | Option 3 | Option 4 | Correct Answer | Explanation
+    """
     quizzes = []
-    blocks = re.split(r'\n\s*\n', file_content.strip())
-    
+    lines = file_content.strip().split('\n')
+
     option_map = {
         'A': 0, 'B': 1, 'C': 2, 'D': 3,
-        'a': 0, 'b': 1, 'c': 2, 'd': 3,
         '1': 0, '2': 1, '3': 2, '4': 3
     }
 
-    for block in blocks:
-        lines = [line.strip() for line in block.split('\n') if line.strip()]
-        if len(lines) < 5:
+    for line in lines:
+        line = line.strip()
+        if not line or '|' not in line:
             continue
 
-        question_text = ""
-        options = []
-        correct_id = None
+        parts = [p.strip() for p in line.split('|')]
 
-        for line in lines:
-            # Extract Question
-            if re.match(r'^(Q\s*\d*[\).:]?|Q:?)\s*', line, re.IGNORECASE):
-                question_text = re.sub(r'^(Q\s*\d*[\).:]?|Q:?)\s*', '', line, flags=re.IGNORECASE).strip()
-            # Extract Options
-            elif re.match(r'^[A-Da-d1-4][\).:]\s*', line):
-                opt_text = re.sub(r'^[A-Da-d1-4][\).:]\s*', '', line).strip()
-                options.append(opt_text)
-            # Extract Correct Answer
-            elif re.match(r'^(Ans|Answer)[\).:]\s*', line, re.IGNORECASE):
-                ans_char = line.split(':')[-1].strip().upper()
-                correct_id = option_map.get(ans_char, None)
+        if len(parts) >= 4:
+            question_text = parts[0]
+            
+            if len(parts) >= 6:
+                options = parts[1:5]
+                raw_ans = parts[5].upper()
+                explanation = parts[6] if len(parts) > 6 else ""
+            else:
+                options = parts[1:-1]
+                raw_ans = parts[-1].upper()
+                explanation = ""
 
-        if not question_text and len(lines) >= 5 and len(options) >= 2:
-            question_text = lines[0]
+            ans_clean = re.sub(r'[^A-D1-4]', '', raw_ans)
+            correct_id = option_map.get(ans_clean)
 
-        if question_text and len(options) >= 2 and correct_id is not None:
-            quizzes.append({
-                "question": question_text,
-                "options": options,
-                "correct_option_id": correct_id
-            })
+            if question_text and len(options) >= 2 and correct_id is not None:
+                quizzes.append({
+                    "question": question_text,
+                    "options": options,
+                    "correct_option_id": correct_id,
+                    "explanation": explanation[:200]
+                })
 
     return quizzes
 
 
-# --- COMMAND HANDLERS ---
+# --- COMMAND & EVENT HANDLERS ---
 
 @app.on_message(filters.command("start"))
 async def start_cmd(client: Client, message: Message):
@@ -99,37 +101,44 @@ async def start_cmd(client: Client, message: Message):
         f"👋 **Welcome to Quiz Uploader Bot!**\n\n"
         f"🎯 **Saved Target Chat ID:** `{saved_chat}`\n\n"
         f"📌 **Instructions:**\n"
-        f"1. **Chat ID Set Karein:** Inline button par click karke direct Chat ID (e.g., `-1004399820534`) save karein.\n"
-        f"2. `.txt` File Bhejein aur `/quiz` command se upload start karein.\n"
-        f"3. Chalte hue upload ko rokne ke liye `/stop` type karein.",
+        f"1. **Chat ID Set Karein:** Button par click karein aur direct ID (e.g., `-1004399820534`) bhejein.\n"
+        f"2. Pipe separated `.txt` File Bhejein (`Question | Opt 1 | Opt 2 | Opt 3 | Opt 4 | Ans | Exp`).\n"
+        f"3. `/quiz` command se upload start karein ya `/stop` se rokein.",
         reply_markup=keyboard
     )
 
 
-@app.on_message(filters.command("setchat"))
-async def set_chat_command(client: Client, message: Message):
-    if len(message.command) < 2:
-        await message.reply_text("❌ **Invalid Format!**\nUse: `/setchat -1004399820534`")
-        return
-
-    raw_chat_id = message.command[1].strip()
-
-    try:
-        chat_id_int = int(raw_chat_id)
-        USER_CHAT_CONFIG[message.from_user.id] = chat_id_int
-        await message.reply_text(f"✅ **Chat ID Successfully Saved!**\nTarget Chat ID: `{chat_id_int}`")
-    except ValueError:
-        await message.reply_text("❌ **Invalid ID!** Sirf numeric format enter karein (Jaise `-1004399820534`).")
-
-
 @app.on_callback_query(filters.regex("btn_save_chat_id"))
 async def cb_save_chat(client: Client, callback_query: CallbackQuery):
+    user_id = callback_query.from_user.id
+    AWAITING_CHAT_ID.add(user_id)  # Flag set for waiting input
     await callback_query.message.reply_text(
-        "✏️ **Direct Chat ID Set Karein:**\n\n"
-        "Niche di gayi command copy karke apni ID ke sath bhejein:\n"
-        "`/setchat -1004399820534`"
+        "✏️ **Direct Target Chat ID Bhejein:**\n\n"
+        "Abhi bina kisi command ke seedha apni Chat ID enter karke bhej dein (Jaise: `-1004399820534`)."
     )
     await callback_query.answer()
+
+
+@app.on_message(filters.text & ~filters.command(["start", "quiz", "stop"]))
+async def handle_direct_chat_id_input(client: Client, message: Message):
+    user_id = message.from_user.id
+
+    # Agar user ne "Save Chat ID" button par click kiya tha
+    if user_id in AWAITING_CHAT_ID:
+        raw_input = message.text.strip()
+        
+        try:
+            chat_id_int = int(raw_input)
+            USER_CHAT_CONFIG[user_id] = chat_id_int
+            AWAITING_CHAT_ID.remove(user_id)  # Reset flag
+            
+            await message.reply_text(
+                f"✅ **Chat ID Successfully Saved!**\n\n"
+                f"🎯 **Target Chat ID:** `{chat_id_int}`\n\n"
+                f"Ab aap apni `.txt` quiz file bhej sakte hain."
+            )
+        except ValueError:
+            await message.reply_text("❌ **Invalid Format!** Kripya sirf numeric Chat ID bhejein (Jaise: `-1004399820534`).")
 
 
 @app.on_message(filters.document)
@@ -149,7 +158,7 @@ async def handle_document_upload(client: Client, message: Message):
         ])
         await message.reply_text(
             "⚠️ **Target Chat ID Set Nahi Hai!**\n\n"
-            "Pehle Save Chat ID button par click karke valid Chat ID set karein.",
+            "Pehle Save Chat ID button par click karke direct Chat ID set karein.",
             reply_markup=keyboard
         )
         return
@@ -181,7 +190,7 @@ async def start_quiz_process(client: Client, union_obj):
     doc_message = USER_ACTIVE_FILES.get(user_id)
 
     if not target_chat:
-        await message.reply_text("❌ Target Chat ID set nahi hai! Use `/setchat -1004399820534` first.")
+        await message.reply_text("❌ Target Chat ID set nahi hai! Pehle Chat ID set karein.")
         return
 
     if not doc_message:
@@ -198,44 +207,60 @@ async def start_quiz_process(client: Client, union_obj):
         quizzes = parse_quiz_file(content)
 
         if not quizzes:
-            await status_msg.edit_text("❌ File format invalid hai ya questions parse nahi ho paye.")
+            await status_msg.edit_text("❌ File format invalid hai ya pipe (`|`) split questions parse nahi ho paye.")
+            os.remove(file_path)
+            return
+
+        # Peer Cache Verification
+        try:
+            target_chat_id = int(target_chat)
+            await client.get_chat(target_chat_id)
+        except Exception as p_err:
+            await status_msg.edit_text(f"❌ **Peer Access Error:** `{p_err}`\n\nBot ko channel me Admin banakar ek test message bhejein.")
             os.remove(file_path)
             return
 
         await status_msg.edit_text(
             f"🚀 **Uploading Started!**\n"
             f"📊 Total Questions: `{len(quizzes)}`\n"
-            f"🎯 Target Chat: `{target_chat}`\n\n"
+            f"🎯 Target Chat: `{target_chat_id}`\n\n"
             f"🛑 Upload rokne ke liye `/stop` command bhejein."
         )
 
         STOP_TASKS[user_id] = True
         success_count = 0
+        is_stopped = False
 
         for idx, q in enumerate(quizzes, start=1):
             if not STOP_TASKS.get(user_id, False):
+                is_stopped = True
                 await status_msg.edit_text(f"🛑 Upload Stopped! Posted **{success_count}/{len(quizzes)}** Quizzes.")
                 break
 
             try:
                 await client.send_poll(
-                    chat_id=target_chat,
+                    chat_id=target_chat_id,
                     question=f"{idx}. {q['question']}",
                     options=q['options'],
                     type="quiz",
-                    correct_option_id=q['correct_option_id'],
+                    correct_option_id=int(q['correct_option_id']),
+                    explanation=q.get('explanation', ''),
                     is_anonymous=True
                 )
                 success_count += 1
                 await asyncio.sleep(2.5)
             except Exception as e:
                 print(f"Error Q{idx}: {e}")
-                # Agar Channel me Bot Admin nahi hai to yeh error dikhayega
-                await status_msg.edit_text(f"❌ **Upload Failed at Q{idx}!**\nError: `{str(e)}`\n\n Check karein ki bot target channel me Admin hai aur Send Polls permission active hai.")
+                await status_msg.edit_text(f"❌ **Upload Failed at Q{idx}!**\nError: `{str(e)}`")
+                is_stopped = True
                 break
 
-        if STOP_TASKS.get(user_id, False) and success_count == len(quizzes):
-            await status_msg.edit_text(f"✅ **Upload Completed!**\nPosted **{success_count}/{len(quizzes)}** Quizzes to `{target_chat}`.")
+        if not is_stopped:
+            await status_msg.edit_text(
+                f"✅ **Upload Completed Successfully!**\n\n"
+                f"📊 Total Questions Posted: **{success_count}/{len(quizzes)}**\n"
+                f"🎯 Destination: `{target_chat_id}`"
+            )
 
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: `{str(e)}`")
