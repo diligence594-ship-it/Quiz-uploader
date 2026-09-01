@@ -2,16 +2,25 @@ import os
 import re
 import asyncio
 from threading import Thread
+
 from flask import Flask
+
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery
+)
+from pyrogram.enums import PollType
 
 
 # ============================================================
-# RENDER HEALTH CHECK
+# FLASK SERVER FOR RENDER
 # ============================================================
 
 web_app = Flask(__name__)
+
 
 @web_app.route("/")
 def health_check():
@@ -20,19 +29,39 @@ def health_check():
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
-    web_app.run(host="0.0.0.0", port=port)
+    web_app.run(
+        host="0.0.0.0",
+        port=port
+    )
 
 
-Thread(target=run_web_server, daemon=True).start()
+Thread(
+    target=run_web_server,
+    daemon=True
+).start()
 
 
 # ============================================================
-# BOT CONFIG
+# BOT CONFIGURATION
 # ============================================================
 
-API_ID = int(os.environ.get("API_ID", "12345678"))
-API_HASH = os.environ.get("API_HASH", "your_api_hash")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
+API_ID = int(
+    os.environ.get(
+        "API_ID",
+        "12345678"
+    )
+)
+
+API_HASH = os.environ.get(
+    "API_HASH",
+    "your_api_hash"
+)
+
+BOT_TOKEN = os.environ.get(
+    "BOT_TOKEN",
+    "your_bot_token"
+)
+
 
 app = Client(
     "quiz_uploader_bot",
@@ -43,7 +72,7 @@ app = Client(
 
 
 # ============================================================
-# STATE
+# MEMORY STORAGE
 # ============================================================
 
 USER_CHAT_CONFIG = {}
@@ -53,312 +82,422 @@ AWAITING_CHAT_ID = set()
 
 
 # ============================================================
-# PARSER
+# QUIZ PARSER
 # ============================================================
 
-def parse_options(option_text):
-    """
-    Parses options exactly like:
-
-    A) अनुच्छेद 12-18, B) अनुच्छेद 14-18,
-    C) अनुच्छेद 19-22, D) अनुच्छेद 23-24
-
-    Returns ONLY the option text, in A/B/C/D order.
-    """
-
-    option_text = option_text.strip()
-
-    # This regex finds A), B), C), D) regardless of spaces.
-    matches = list(
-        re.finditer(
-            r"(?:^|,\s*)([A-Da-d])\s*[\)\.:\-]\s*",
-            option_text
-        )
-    )
-
-    if not matches:
-        return []
-
-    options = []
-
-    for i, match in enumerate(matches):
-        start = match.end()
-
-        if i + 1 < len(matches):
-            end = matches[i + 1].start()
-
-            # Remove the comma immediately before next option.
-            text = option_text[start:end].strip().rstrip(",").strip()
-        else:
-            text = option_text[start:].strip().rstrip(",").strip()
-
-        if text:
-            options.append(text)
-
-    return options
-
-
-def parse_answer(answer_text):
-    """
-    Converts:
-        A -> 0
-        B -> 1
-        C -> 2
-        D -> 3
-
-    Also accepts:
-        1/2/3/4
-        Answer: B
-        Correct Answer: B
-        (B)
-        B)
-    """
-
-    answer_text = answer_text.strip().upper()
-
-    # First look specifically for A/B/C/D or 1/2/3/4.
-    match = re.search(r"\b([A-D]|[1-4])\b", answer_text)
-
-    if not match:
-        match = re.search(r"([A-D]|[1-4])", answer_text)
-
-    if not match:
-        return None, None
-
-    answer = match.group(1).upper()
-
-    mapping = {
-        "A": 0,
-        "B": 1,
-        "C": 2,
-        "D": 3,
-        "1": 0,
-        "2": 1,
-        "3": 2,
-        "4": 3,
-    }
-
-    return answer, mapping.get(answer)
-
-
-def parse_quiz_file(file_content):
-    """
-    REQUIRED FORMAT:
-
-    Q1. Question | A) Option A, B) Option B, C) Option C, D) Option D | B | Explanation
-
-    IMPORTANT:
-    The answer field is converted directly:
-        A = first option
-        B = second option
-        C = third option
-        D = fourth option
-    """
+def parse_quiz_file(file_content: str) -> list:
 
     quizzes = []
 
-    for line_no, line in enumerate(file_content.splitlines(), start=1):
+    # A = 0
+    # B = 1
+    # C = 2
+    # D = 3
+
+    answer_map = {
+        "A": 0,
+        "B": 1,
+        "C": 2,
+        "D": 3
+    }
+
+    for line_no, line in enumerate(
+        file_content.splitlines(),
+        1
+    ):
 
         line = line.strip()
 
-        if not line or "|" not in line:
+        # Empty line skip
+        if not line:
             continue
 
-        # Exactly split the 4 logical sections.
-        parts = [x.strip() for x in line.split("|", 3)]
+        # Pipe hona zaroori hai
+        if "|" not in line:
+            continue
+
+        # EXACTLY maximum 4 parts:
+        #
+        # Question
+        # Options
+        # Answer
+        # Explanation
+        #
+        parts = [
+            x.strip()
+            for x in line.split("|", 3)
+        ]
 
         if len(parts) < 3:
-            print(f"[SKIP {line_no}] Invalid pipe format")
+
+            print(
+                f"[SKIP Q{line_no}] "
+                f"Invalid pipe format"
+            )
+
             continue
 
-        # --------------------------------------------------------
+
+        # ====================================================
         # QUESTION
-        # --------------------------------------------------------
+        # ====================================================
 
         question = parts[0].strip()
 
+        # Q1.
+        # Q2.
+        # Q10.
+        # Q 1.
+        #
+        # remove
+
         question = re.sub(
-            r"^\s*Q\s*\d+\s*[\.\):\-]\s*",
+            r"^Q\s*\d+\.\s*",
             "",
             question,
             flags=re.IGNORECASE
         ).strip()
 
-        if not question:
-            print(f"[SKIP {line_no}] Empty question")
-            continue
 
-        # --------------------------------------------------------
+        # ====================================================
         # OPTIONS
-        # --------------------------------------------------------
+        # ====================================================
 
-        options = parse_options(parts[1])
+        option_text = parts[1].strip()
+
+        #
+        # Expected:
+        #
+        # A) अनुच्छेद 12-18,
+        # B) अनुच्छेद 14-18,
+        # C) अनुच्छेद 19-22,
+        # D) अनुच्छेद 23-24
+        #
+
+        option_matches = re.findall(
+            r"(?:^|,\s*)([A-D])\)\s*(.*?)(?=,\s*[A-D]\)\s*|$)",
+            option_text,
+            flags=re.IGNORECASE
+        )
+
+
+        options = []
+
+        for letter, option in option_matches:
+
+            option = option.strip()
+
+            if option:
+                options.append(option)
+
+
+        # Exactly 4 options required
 
         if len(options) != 4:
+
             print(
-                f"[SKIP {line_no}] Expected 4 options, "
-                f"found {len(options)}: {options}"
+                f"[SKIP Q{line_no}] "
+                f"Expected 4 options, "
+                f"found {len(options)}"
             )
+
+            print(
+                f"RAW OPTIONS: {option_text}"
+            )
+
             continue
 
-        # --------------------------------------------------------
-        # ANSWER
-        # --------------------------------------------------------
 
-        answer_letter, correct_option_id = parse_answer(parts[2])
+        # ====================================================
+        # CORRECT ANSWER
+        # ====================================================
 
-        if correct_option_id is None:
+        raw_answer = parts[2].strip().upper()
+
+        # Answer field se A/B/C/D nikaalo
+
+        answer_match = re.search(
+            r"[A-D]",
+            raw_answer
+        )
+
+        if not answer_match:
+
             print(
-                f"[SKIP {line_no}] Invalid answer: {parts[2]}"
+                f"[SKIP Q{line_no}] "
+                f"Invalid answer: {raw_answer}"
             )
+
             continue
 
-        # Make absolutely sure the ID is inside the options.
-        if not 0 <= correct_option_id < len(options):
-            print(
-                f"[SKIP {line_no}] Invalid correct ID: "
-                f"{correct_option_id}"
-            )
-            continue
 
-        # --------------------------------------------------------
+        correct_letter = answer_match.group(0)
+
+        # A=0
+        # B=1
+        # C=2
+        # D=3
+
+        correct_option_id = answer_map[
+            correct_letter
+        ]
+
+
+        # ====================================================
         # EXPLANATION
-        # --------------------------------------------------------
+        # ====================================================
 
         explanation = ""
 
-        if len(parts) == 4:
+        if len(parts) >= 4:
             explanation = parts[3].strip()
 
+        # Telegram explanation limit
         explanation = explanation[:200]
 
-        quiz = {
+
+        # ====================================================
+        # SAVE QUIZ
+        # ====================================================
+
+        quiz_data = {
             "question": question,
             "options": options,
             "correct_option_id": correct_option_id,
-            "correct_answer": answer_letter,
+            "correct_answer": correct_letter,
             "explanation": explanation
         }
 
-        quizzes.append(quiz)
-
-        # VERY IMPORTANT DEBUG LOG
-        print(
-            f"[PARSED Q{len(quizzes)}] "
-            f"ANSWER={answer_letter} | "
-            f"CORRECT_ID={correct_option_id} | "
-            f"OPTIONS={options}"
+        quizzes.append(
+            quiz_data
         )
+
+
+        # ====================================================
+        # DEBUG LOG
+        # ====================================================
+
+        print(
+            "======================================"
+        )
+
+        print(
+            f"QUESTION {line_no}"
+        )
+
+        print(
+            f"ANSWER LETTER: {correct_letter}"
+        )
+
+        print(
+            f"CORRECT OPTION ID: {correct_option_id}"
+        )
+
+        print(
+            f"OPTIONS: {options}"
+        )
+
+        print(
+            "======================================"
+        )
+
 
     return quizzes
 
 
 # ============================================================
-# START
+# /START
 # ============================================================
 
-@app.on_message(filters.command("start"))
-async def start_cmd(client, message):
+@app.on_message(
+    filters.command("start")
+)
+async def start_cmd(
+    client: Client,
+    message: Message
+):
 
     user_id = message.from_user.id
 
-    saved_chat = USER_CHAT_CONFIG.get(user_id, "Not Set")
+    saved_chat = USER_CHAT_CONFIG.get(
+        user_id,
+        "Not Set"
+    )
+
 
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "⚙️ Save Chat ID",
-                callback_data="save_chat_id"
+                callback_data="btn_save_chat_id"
             )
         ]
     ])
 
+
     await message.reply_text(
-        f"👋 **Quiz Uploader Bot**\n\n"
-        f"🎯 Saved Chat ID: `{saved_chat}`\n\n"
-        f"📝 TXT format:\n"
-        f"`Q1. Question | A) Option A, B) Option B, C) Option C, D) Option D | B | Explanation`\n\n"
-        f"➡️ File bhejo → `/quiz`",
+
+        f"👋 **Welcome to Quiz Uploader Bot!**\n\n"
+
+        f"🎯 **Saved Target Chat ID:** "
+        f"`{saved_chat}`\n\n"
+
+        f"📌 **Instructions:**\n"
+
+        f"1. **Chat ID Set Karein:** "
+        f"Button par click karein aur Chat ID bhejein.\n\n"
+
+        f"2. `.txt` Quiz File bhejein.\n\n"
+
+        f"3. Format:\n"
+        f"`Question | A) Opt1, B) Opt2, C) Opt3, D) Opt4 | B | Explanation`\n\n"
+
+        f"4. `/quiz` se upload start karein.\n\n"
+
+        f"5. `/stop` se upload rok sakte hain.",
+
         reply_markup=keyboard
     )
 
 
 # ============================================================
-# SAVE CHAT ID
+# SAVE CHAT ID BUTTON
 # ============================================================
 
-@app.on_callback_query(filters.regex("^save_chat_id$"))
-async def save_chat_id_button(client, callback_query):
+@app.on_callback_query(
+    filters.regex("^btn_save_chat_id$")
+)
+async def cb_save_chat(
+    client: Client,
+    callback_query: CallbackQuery
+):
 
     user_id = callback_query.from_user.id
 
-    AWAITING_CHAT_ID.add(user_id)
+    AWAITING_CHAT_ID.add(
+        user_id
+    )
+
 
     await callback_query.message.reply_text(
-        "✏️ **Target Chat ID bhejein:**\n\n"
-        "Example: `-1004399820534`"
+
+        "✏️ **Direct Target Chat ID Bhejein:**\n\n"
+
+        "Ab bina command ke sirf Chat ID bhejein.\n\n"
+
+        "Example:\n"
+        "`-1004399820534`"
     )
+
 
     await callback_query.answer()
 
 
 # ============================================================
-# CHAT ID INPUT
+# DIRECT CHAT ID INPUT
 # ============================================================
 
 @app.on_message(
     filters.text &
-    ~filters.command(["start", "quiz", "stop"])
+    ~filters.command([
+        "start",
+        "quiz",
+        "stop"
+    ])
 )
-async def chat_id_input(client, message):
+async def handle_direct_chat_id_input(
+    client: Client,
+    message: Message
+):
 
     user_id = message.from_user.id
 
     if user_id not in AWAITING_CHAT_ID:
         return
 
+
+    raw_input = message.text.strip()
+
+
     try:
 
-        chat_id = int(message.text.strip())
+        chat_id_int = int(
+            raw_input
+        )
 
-        USER_CHAT_CONFIG[user_id] = chat_id
-        AWAITING_CHAT_ID.remove(user_id)
+        USER_CHAT_CONFIG[
+            user_id
+        ] = chat_id_int
+
+        AWAITING_CHAT_ID.remove(
+            user_id
+        )
+
 
         await message.reply_text(
-            f"✅ **Chat ID Saved!**\n\n"
-            f"`{chat_id}`"
+
+            f"✅ **Chat ID Successfully Saved!**\n\n"
+
+            f"🎯 **Target Chat ID:** "
+            f"`{chat_id_int}`\n\n"
+
+            f"Ab `.txt` quiz file bhej sakte hain."
         )
+
 
     except ValueError:
 
         await message.reply_text(
-            "❌ Invalid Chat ID.\n"
-            "Example: `-1004399820534`"
+
+            "❌ **Invalid Chat ID!**\n\n"
+
+            "Sirf numeric Chat ID bhejein.\n\n"
+
+            "Example:\n"
+            "`-1004399820534`"
         )
 
 
 # ============================================================
-# TXT FILE
+# TXT FILE UPLOAD
 # ============================================================
 
-@app.on_message(filters.document)
-async def document_upload(client, message):
+@app.on_message(
+    filters.document
+)
+async def handle_document_upload(
+    client: Client,
+    message: Message
+):
 
     user_id = message.from_user.id
 
-    file_name = message.document.file_name or ""
+    file_name = (
+        message.document.file_name
+        or ""
+    )
 
-    if not file_name.lower().endswith(".txt"):
+
+    if not file_name.lower().endswith(
+        ".txt"
+    ):
 
         await message.reply_text(
-            "❌ Sirf `.txt` file allowed hai."
+            "❌ Sirf `.txt` quiz files allowed hain."
         )
 
         return
 
-    USER_ACTIVE_FILES[user_id] = message
 
-    target_chat = USER_CHAT_CONFIG.get(user_id)
+    USER_ACTIVE_FILES[
+        user_id
+    ] = message
+
+
+    target_chat = USER_CHAT_CONFIG.get(
+        user_id
+    )
+
 
     if not target_chat:
 
@@ -366,256 +505,441 @@ async def document_upload(client, message):
             [
                 InlineKeyboardButton(
                     "⚙️ Save Chat ID",
-                    callback_data="save_chat_id"
+                    callback_data="btn_save_chat_id"
                 )
             ]
         ])
 
+
         await message.reply_text(
-            "⚠️ Pehle Target Chat ID save karein.",
+
+            "⚠️ **Target Chat ID Set Nahi Hai!**\n\n"
+
+            "Pehle Save Chat ID button se "
+            "target channel/group ki Chat ID save karein.",
+
             reply_markup=keyboard
         )
 
         return
 
+
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "🚀 Start Upload",
-                callback_data="start_quiz"
+                callback_data="btn_trigger_quiz"
             )
         ]
     ])
 
+
     await message.reply_text(
-        f"📄 File: `{file_name}`\n"
-        f"🎯 Chat: `{target_chat}`\n\n"
-        f"`/quiz` bhejein ya button press karein.",
+
+        f"📄 **File Received:** "
+        f"`{file_name}`\n\n"
+
+        f"🎯 **Target Chat:** "
+        f"`{target_chat}`\n\n"
+
+        f"🚀 `/quiz` type karein "
+        f"ya button dabayein.",
+
         reply_markup=keyboard
     )
 
 
 # ============================================================
-# QUIZ PROCESS
+# QUIZ UPLOAD
 # ============================================================
 
-async def upload_quizzes(client, source):
+@app.on_message(
+    filters.command("quiz")
+)
+@app.on_callback_query(
+    filters.regex("^btn_trigger_quiz$")
+)
+async def start_quiz_process(
+    client: Client,
+    union_obj
+):
 
-    if isinstance(source, CallbackQuery):
+    # Callback button
+    if isinstance(
+        union_obj,
+        CallbackQuery
+    ):
 
-        message = source.message
-        user_id = source.from_user.id
+        message = union_obj.message
 
-        await source.answer()
+        user_id = (
+            union_obj.from_user.id
+        )
 
+        await union_obj.answer()
+
+    # /quiz command
     else:
 
-        message = source
-        user_id = source.from_user.id
+        message = union_obj
 
-    target_chat = USER_CHAT_CONFIG.get(user_id)
-    document = USER_ACTIVE_FILES.get(user_id)
+        user_id = (
+            union_obj.from_user.id
+        )
+
+
+    target_chat = USER_CHAT_CONFIG.get(
+        user_id
+    )
+
+    doc_message = USER_ACTIVE_FILES.get(
+        user_id
+    )
+
+
+    # ========================================================
+    # CHECK CHAT ID
+    # ========================================================
 
     if not target_chat:
 
         await message.reply_text(
-            "❌ Target Chat ID set nahi hai."
+            "❌ Target Chat ID set nahi hai!"
         )
 
         return
 
-    if not document:
+
+    # ========================================================
+    # CHECK FILE
+    # ========================================================
+
+    if not doc_message:
 
         await message.reply_text(
-            "❌ Pehle `.txt` file bhejein."
+            "❌ Koi `.txt` quiz file nahi mili!"
         )
 
         return
 
-    if STOP_TASKS.get(user_id):
 
-        await message.reply_text(
-            "⚠️ Upload already running hai."
-        )
-
-        return
-
-    status = await message.reply_text(
-        "📥 **File download ho rahi hai...**"
+    status_msg = await message.reply_text(
+        "📥 Downloading & Processing File..."
     )
+
 
     file_path = None
 
+
     try:
 
-        file_path = await document.download()
+        # ====================================================
+        # DOWNLOAD FILE
+        # ====================================================
+
+        file_path = await doc_message.download()
+
+
+        # ====================================================
+        # READ FILE
+        # ====================================================
 
         with open(
             file_path,
             "r",
-            encoding="utf-8-sig",
-            errors="replace"
+            encoding="utf-8-sig"
         ) as f:
+
             content = f.read()
 
-        quizzes = parse_quiz_file(content)
+
+        # ====================================================
+        # PARSE
+        # ====================================================
+
+        quizzes = parse_quiz_file(
+            content
+        )
+
 
         if not quizzes:
 
-            await status.edit_text(
-                "❌ Koi valid quiz parse nahi hui.\n\n"
-                "Format:\n"
-                "`Q1. Question | A) Option A, B) Option B, C) Option C, D) Option D | B | Explanation`"
+            await status_msg.edit_text(
+
+                "❌ **No Quiz Found!**\n\n"
+
+                "File format check karein:\n\n"
+
+                "`Question | A) Option 1, B) Option 2, C) Option 3, D) Option 4 | B | Explanation`"
             )
 
             return
 
-        target_chat_id = int(target_chat)
+
+        # ====================================================
+        # CHAT ACCESS
+        # ====================================================
 
         try:
-            await client.get_chat(target_chat_id)
-        except Exception as e:
-            await status.edit_text(
-                f"❌ **Target Chat Error:**\n`{e}`\n\n"
-                f"Bot ko channel/group me admin banayein."
+
+            target_chat_id = int(
+                target_chat
             )
+
+            await client.get_chat(
+                target_chat_id
+            )
+
+        except Exception as e:
+
+            await status_msg.edit_text(
+
+                f"❌ **Target Chat Access Error**\n\n"
+                f"`{e}`\n\n"
+
+                f"Bot ko target channel/group me "
+                f"admin/member permission dein."
+            )
+
             return
 
-        STOP_TASKS[user_id] = True
 
-        success = 0
-        failed = 0
+        # ====================================================
+        # START
+        # ====================================================
 
-        await status.edit_text(
-            f"🚀 **Upload Started**\n\n"
-            f"📊 Questions: `{len(quizzes)}`\n"
-            f"🎯 Target: `{target_chat_id}`"
+        await status_msg.edit_text(
+
+            f"🚀 **Quiz Upload Started!**\n\n"
+
+            f"📊 Total Questions: "
+            f"`{len(quizzes)}`\n"
+
+            f"🎯 Target: "
+            f"`{target_chat_id}`\n\n"
+
+            f"🛑 Stop karne ke liye `/stop` bhejein."
         )
 
-        # --------------------------------------------------------
-        # SEND POLLS
-        # --------------------------------------------------------
 
-        for index, quiz in enumerate(quizzes, start=1):
+        STOP_TASKS[
+            user_id
+        ] = True
 
-            if not STOP_TASKS.get(user_id, False):
 
-                await status.edit_text(
-                    f"🛑 **Upload Stopped**\n\n"
-                    f"Posted: `{success}/{len(quizzes)}`"
+        success_count = 0
+        failed_count = 0
+        is_stopped = False
+
+
+        # ====================================================
+        # UPLOAD LOOP
+        # ====================================================
+
+        for idx, q in enumerate(
+            quizzes,
+            start=1
+        ):
+
+
+            # -----------------------------------------------
+            # STOP CHECK
+            # -----------------------------------------------
+
+            if not STOP_TASKS.get(
+                user_id,
+                False
+            ):
+
+                is_stopped = True
+
+                await status_msg.edit_text(
+
+                    f"🛑 **Upload Stopped!**\n\n"
+
+                    f"📊 Posted: "
+                    f"`{success_count}/{len(quizzes)}`"
                 )
 
-                return
+                break
+
 
             try:
 
-                correct_id = int(
-                    quiz["correct_option_id"]
-                )
-
-                options = quiz["options"]
-
-                # ------------------------------------------------
+                # -------------------------------------------
                 # FINAL SAFETY CHECK
-                # ------------------------------------------------
+                # -------------------------------------------
 
-                if correct_id < 0 or correct_id >= len(options):
-                    raise ValueError(
-                        f"Invalid correct_option_id={correct_id} "
-                        f"for {len(options)} options"
-                    )
-
-                print(
-                    "--------------------------------------------------"
-                )
-                print(
-                    f"SENDING Q{index}"
-                )
-                print(
-                    f"Question: {quiz['question']}"
-                )
-                print(
-                    f"Options: {options}"
-                )
-                print(
-                    f"Answer: {quiz['correct_answer']}"
-                )
-                print(
-                    f"Correct Option ID: {correct_id}"
-                )
-                print(
-                    f"Explanation: {quiz['explanation']}"
-                )
-                print(
-                    "--------------------------------------------------"
+                correct_id = int(
+                    q["correct_option_id"]
                 )
 
-                # ==================================================
-                # TELEGRAM QUIZ POLL
-                #
-                # A -> correct_option_id 0
-                # B -> correct_option_id 1
-                # C -> correct_option_id 2
-                # D -> correct_option_id 3
-                # ==================================================
+
+                # -------------------------------------------
+                # DEBUG
+                # -------------------------------------------
+
+                print(
+                    "======================================"
+                )
+
+                print(
+                    f"SENDING Q{idx}"
+                )
+
+                print(
+                    f"ANSWER LETTER: "
+                    f"{q['correct_answer']}"
+                )
+
+                print(
+                    f"CORRECT OPTION ID: "
+                    f"{correct_id}"
+                )
+
+                print(
+                    f"OPTIONS: "
+                    f"{q['options']}"
+                )
+
+                print(
+                    "POLL TYPE: QUIZ"
+                )
+
+                print(
+                    "======================================"
+                )
+
+
+                # -------------------------------------------
+                # SEND REAL QUIZ POLL
+                # -------------------------------------------
 
                 await client.send_poll(
+
                     chat_id=target_chat_id,
-                    question=f"{index}. {quiz['question']}",
-                    options=options,
-                    type="quiz",
-                    is_anonymous=True,
+
+                    question=(
+                        f"{idx}. "
+                        f"{q['question']}"
+                    ),
+
+                    options=q["options"],
+
+                    # VERY IMPORTANT
+                    # This creates Telegram QUIZ,
+                    # not normal poll.
+
+                    type=PollType.QUIZ,
+
+                    # A = 0
+                    # B = 1
+                    # C = 2
+                    # D = 3
+
                     correct_option_id=correct_id,
-                    explanation=quiz["explanation"]
+
+                    # Explanation shown after
+                    # answering the quiz.
+
+                    explanation=q[
+                        "explanation"
+                    ],
+
+                    is_anonymous=True
                 )
 
-                success += 1
+
+                success_count += 1
+
+
+                # Small delay
+                await asyncio.sleep(
+                    2.5
+                )
+
 
             except Exception as e:
 
-                failed += 1
+                failed_count += 1
 
                 print(
-                    f"[UPLOAD ERROR Q{index}] "
-                    f"{repr(e)}"
+                    f"ERROR Q{idx}: {repr(e)}"
                 )
 
-                await status.edit_text(
-                    f"❌ **Upload Failed at Q{index}**\n\n"
-                    f"`{e}`\n\n"
-                    f"✅ Uploaded: `{success}`\n"
-                    f"❌ Failed: `{failed}`"
+
+                await status_msg.edit_text(
+
+                    f"❌ **Upload Failed!**\n\n"
+
+                    f"Question: `{idx}`\n"
+
+                    f"Error:\n"
+                    f"`{e}`"
                 )
 
-                return
 
-            await asyncio.sleep(2.5)
+                is_stopped = True
 
-        await status.edit_text(
-            f"✅ **Upload Completed!**\n\n"
-            f"📊 Uploaded: **{success}/{len(quizzes)}**\n"
-            f"❌ Failed: **{failed}**\n"
-            f"🎯 Target: `{target_chat_id}`"
-        )
+                break
+
+
+        # ====================================================
+        # COMPLETED
+        # ====================================================
+
+        if not is_stopped:
+
+            await status_msg.edit_text(
+
+                f"✅ **Upload Completed!**\n\n"
+
+                f"📊 Uploaded: "
+                f"**{success_count}/{len(quizzes)}**\n"
+
+                f"⚠️ Failed: "
+                f"**{failed_count}**\n\n"
+
+                f"🎯 Destination:\n"
+                f"`{target_chat_id}`"
+            )
+
 
     except Exception as e:
 
         print(
-            f"[MAIN ERROR] {repr(e)}"
+            f"MAIN ERROR: {repr(e)}"
         )
 
         try:
-            await status.edit_text(
-                f"❌ **Error:**\n`{e}`"
+
+            await status_msg.edit_text(
+
+                f"❌ **Error:**\n\n"
+                f"`{e}`"
             )
+
         except Exception:
             pass
 
+
     finally:
 
-        STOP_TASKS.pop(user_id, None)
+        # Remove stop state
 
-        if file_path and os.path.exists(file_path):
+        STOP_TASKS.pop(
+            user_id,
+            None
+        )
+
+
+        # Remove downloaded file
+
+        if (
+            file_path
+            and
+            os.path.exists(file_path)
+        ):
 
             try:
                 os.remove(file_path)
@@ -624,60 +948,62 @@ async def upload_quizzes(client, source):
 
 
 # ============================================================
-# /QUIZ
-# ============================================================
-
-@app.on_message(filters.command("quiz"))
-async def quiz_command(client, message):
-
-    await upload_quizzes(
-        client,
-        message
-    )
-
-
-# ============================================================
-# BUTTON
-# ============================================================
-
-@app.on_callback_query(
-    filters.regex("^start_quiz$")
-)
-async def quiz_button(client, callback_query):
-
-    await upload_quizzes(
-        client,
-        callback_query
-    )
-
-
-# ============================================================
 # /STOP
 # ============================================================
 
-@app.on_message(filters.command("stop"))
-async def stop_command(client, message):
+@app.on_message(
+    filters.command("stop")
+)
+async def stop_quiz_process(
+    client: Client,
+    message: Message
+):
 
     user_id = message.from_user.id
 
-    if STOP_TASKS.get(user_id):
 
-        STOP_TASKS[user_id] = False
+    if (
+        user_id in STOP_TASKS
+        and
+        STOP_TASKS[user_id]
+    ):
+
+        STOP_TASKS[
+            user_id
+        ] = False
+
 
         await message.reply_text(
-            "🛑 **Stop signal sent.**"
+
+            "🛑 **Stop Signal Sent!**\n\n"
+            "Current upload process stop ho raha hai..."
         )
+
 
     else:
 
         await message.reply_text(
-            "⚠️ Koi upload running nahi hai."
+
+            "⚠️ Koi active quiz upload process nahi hai."
         )
 
 
 # ============================================================
-# RUN
+# RUN BOT
 # ============================================================
 
 if __name__ == "__main__":
+
+    print(
+        "======================================"
+    )
+
+    print(
+        "QUIZ BOT STARTING..."
+    )
+
+    print(
+        "======================================"
+    )
+
     app.run()
