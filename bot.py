@@ -40,14 +40,9 @@ STOP_TASKS = {}             # Tracks active upload loops for /stop command
 
 
 def parse_quiz_file(file_content: str) -> list:
-    """
-    Robust regex-based parsing to ensure accurate question, 
-    options, and correct answer mapping for Telegram Native Polls.
-    """
     quizzes = []
     blocks = re.split(r'\n\s*\n', file_content.strip())
     
-    # Standard mapping for A, B, C, D or 1, 2, 3, 4
     option_map = {
         'A': 0, 'B': 1, 'C': 2, 'D': 3,
         'a': 0, 'b': 1, 'c': 2, 'd': 3,
@@ -76,7 +71,6 @@ def parse_quiz_file(file_content: str) -> list:
                 ans_char = line.split(':')[-1].strip().upper()
                 correct_id = option_map.get(ans_char, None)
 
-        # Fallback question detection if 'Q' prefix was omitted
         if not question_text and len(lines) >= 5 and len(options) >= 2:
             question_text = lines[0]
 
@@ -120,17 +114,12 @@ async def set_chat_command(client: Client, message: Message):
 
     raw_chat_id = message.command[1].strip()
 
-    # Strict Validation for Numeric Chat IDs (e.g., -1004399820534)
-    if not re.match(r'^-100\d+$|^-?\d+$', raw_chat_id):
-        await message.reply_text("❌ **Invalid Chat ID Format!**\nSirf numeric format accept hoga (e.g., `-1004399820534`). Usernames allowed nahi hain.")
-        return
-
     try:
         chat_id_int = int(raw_chat_id)
         USER_CHAT_CONFIG[message.from_user.id] = chat_id_int
         await message.reply_text(f"✅ **Chat ID Successfully Saved!**\nTarget Chat ID: `{chat_id_int}`")
     except ValueError:
-        await message.reply_text("❌ **Invalid Integer ID!**")
+        await message.reply_text("❌ **Invalid ID!** Sirf numeric format enter karein (Jaise `-1004399820534`).")
 
 
 @app.on_callback_query(filters.regex("btn_save_chat_id"))
@@ -180,7 +169,6 @@ async def handle_document_upload(client: Client, message: Message):
 @app.on_message(filters.command("quiz"))
 @app.on_callback_query(filters.regex("btn_trigger_quiz"))
 async def start_quiz_process(client: Client, union_obj):
-    # Handle both Message command (/quiz) and CallbackQuery button
     if isinstance(union_obj, CallbackQuery):
         message = union_obj.message
         user_id = union_obj.from_user.id
@@ -239,12 +227,14 @@ async def start_quiz_process(client: Client, union_obj):
                     is_anonymous=True
                 )
                 success_count += 1
-                await asyncio.sleep(2.5)  # FloodWait Safe Delay
+                await asyncio.sleep(2.5)
             except Exception as e:
                 print(f"Error Q{idx}: {e}")
-                await asyncio.sleep(3)
+                # Agar Channel me Bot Admin nahi hai to yeh error dikhayega
+                await status_msg.edit_text(f"❌ **Upload Failed at Q{idx}!**\nError: `{str(e)}`\n\n Check karein ki bot target channel me Admin hai aur Send Polls permission active hai.")
+                break
 
-        if STOP_TASKS.get(user_id, False):
+        if STOP_TASKS.get(user_id, False) and success_count == len(quizzes):
             await status_msg.edit_text(f"✅ **Upload Completed!**\nPosted **{success_count}/{len(quizzes)}** Quizzes to `{target_chat}`.")
 
     except Exception as e:
