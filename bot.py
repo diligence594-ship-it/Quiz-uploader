@@ -42,12 +42,13 @@ AWAITING_CHAT_ID = set()    # Tracks users who clicked "Save Chat ID" button
 
 def parse_quiz_file(file_content: str) -> list:
     """
-    Parses single-line pipe-separated quizzes:
+    Parses single-line pipe-separated quizzes cleanly:
     Question | Option 1 | Option 2 | Option 3 | Option 4 | Correct Answer | Explanation
     """
     quizzes = []
     lines = file_content.strip().split('\n')
 
+    # Telegram send_poll expects 0-based index (0=A, 1=B, 2=C, 3=D)
     option_map = {
         'A': 0, 'B': 1, 'C': 2, 'D': 3,
         '1': 0, '2': 1, '3': 2, '4': 3
@@ -60,26 +61,38 @@ def parse_quiz_file(file_content: str) -> list:
 
         parts = [p.strip() for p in line.split('|')]
 
-        if len(parts) >= 4:
-            question_text = parts[0]
-            
+        if len(parts) >= 3:
+            # 1. Clean Question Text (Remove pre-existing Q1., Q2. prefix if any)
+            raw_q = parts[0]
+            question_text = re.sub(r'^Q\d+\.\s*', '', raw_q)
+
+            # Extract raw options
             if len(parts) >= 6:
-                options = parts[1:5]
+                raw_options = parts[1:5]
                 raw_ans = parts[5].upper()
                 explanation = parts[6] if len(parts) > 6 else ""
             else:
-                options = parts[1:-1]
+                raw_options = parts[1:-1]
                 raw_ans = parts[-1].upper()
                 explanation = ""
 
-            ans_clean = re.sub(r'[^A-D1-4]', '', raw_ans)
-            correct_id = option_map.get(ans_clean)
+            # 2. Clean Options Text (Remove "A) ", "B) ", "1. " prefixes)
+            options = []
+            for opt in raw_options:
+                clean_opt = re.sub(r'^[A-Da-d0-4][\.\)\-\s]\s*', '', opt.strip())
+                if clean_opt:
+                    options.append(clean_opt)
 
-            if question_text and len(options) >= 2 and correct_id is not None:
+            # 3. Extract and map Answer to 0-based Index (0, 1, 2, 3)
+            ans_clean = re.sub(r'[^A-D1-4]', '', raw_ans)
+            correct_id = option_map.get(ans_clean, 0)
+
+            # Validate before adding
+            if question_text and len(options) >= 2 and correct_id < len(options):
                 quizzes.append({
                     "question": question_text,
                     "options": options,
-                    "correct_option_id": correct_id,
+                    "correct_option_id": correct_id, # Strict 0-based integer
                     "explanation": explanation[:200]
                 })
 
@@ -238,12 +251,13 @@ async def start_quiz_process(client: Client, union_obj):
                 break
 
             try:
+                # Direct strict index passing
                 await client.send_poll(
                     chat_id=target_chat_id,
                     question=f"{idx}. {q['question']}",
                     options=q['options'],
                     type="quiz",
-                    correct_option_id=int(q['correct_option_id']),
+                    correct_option_id=int(q['correct_option_id']), # Must be 0, 1, 2, or 3
                     explanation=q.get('explanation', ''),
                     is_anonymous=True
                 )
