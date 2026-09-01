@@ -4,9 +4,9 @@ import asyncio
 from threading import Thread
 from flask import Flask
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- FLASK DUMMY SERVER FOR RENDER HEALTH CHECK ---
+# --- FLASK SERVER FOR RENDER WEB SERVICE ---
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -17,16 +17,20 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host="0.0.0.0", port=port)
 
-# Start Flask in a background thread
 Thread(target=run_web, daemon=True).start()
 
-# --- PYROGRAM BOT LOGIC ---
+# --- PYROGRAM BOT CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", "12345678"))
 API_HASH = os.environ.get("API_HASH", "your_api_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
 
 app = Client("quiz_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# In-memory database to store chat per user
+USER_CHAT_CONFIG = {}
+USER_FILES = {}
+
+# TXT Parsing Logic
 def parse_quiz_file(file_content: str):
     quizzes = []
     blocks = re.split(r'\n\s*\n', file_content.strip())
@@ -60,43 +64,111 @@ def parse_quiz_file(file_content: str):
             
     return quizzes
 
+# Commands & Callbacks
 @app.on_message(filters.command("start"))
 async def start_cmd(client: Client, message: Message):
+    user_id = message.from_user.id
+    current_chat = USER_CHAT_CONFIG.get(user_id, "Not Set")
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚙️ Set Target Chat ID", callback_data="ask_chat_id")]
+    ])
+    
     await message.reply_text(
-        "**Quiz Uploader Bot Active!**\n\n"
-        "**Usage:**\n"
-        "1. Send `.txt` file here.\n"
-        "2. Caption / Command: `/upload @channel_username`"
+        f"**Welcome to Quiz Uploader Bot!**\n\n"
+        f"📌 **Current Target Chat:** `{current_chat}`\n\n"
+        f"**Steps to use:**\n"
+        f"1. Click **Set Target Chat ID** or type `/setchat @username` or `-100123456789`.\n"
+        f"2. Send your `.txt` quiz file.\n"
+        f"3. Click **Upload Quiz** button!",
+        reply_markup=keyboard
     )
 
-@app.on_message(filters.document & filters.command("upload"))
-async def handle_quiz_upload(client: Client, message: Message):
+@app.on_message(filters.command("setchat"))
+async def set_chat_cmd(client: Client, message: Message):
     if len(message.command) < 2:
-        await message.reply_text("❌ Target channel username mention karo.\nFormat: `/upload @channel_username`")
+        await message.reply_text("❌ Please specify Target Chat Username/ID.\nFormat: `/setchat @channel_username` or `/setchat -100123456789`")
         return
+    
+    target = message.command[1]
+    USER_CHAT_CONFIG[message.from_user.id] = target
+    await message.reply_text(f"✅ **Target Chat Set Successfully!**\nTarget: `{target}`")
 
-    target_chat = message.command[1]
+@app.on_callback_query(filters.regex("ask_chat_id"))
+async def ask_chat_callback(client: Client, callback_query: CallbackQuery):
+    await callback_query.message.reply_text(
+        "✏️ **Target Chat Set Karne Ke Liye Command Bhejo:**\n\n"
+        "`/setchat @channel_username`\n"
+        "ya\n"
+        "`/setchat -100123456789` (Group/Channel ID)"
+    )
+    await callback_query.answer()
+
+@app.on_message(filters.document)
+async def handle_document(client: Client, message: Message):
+    user_id = message.from_user.id
+    target_chat = USER_CHAT_CONFIG.get(user_id)
 
     if not message.document.file_name.endswith('.txt'):
         await message.reply_text("❌ Only `.txt` files supported.")
         return
 
-    status_msg = await message.reply_text("📥 Downloading TXT file...")
-    file_path = await message.download()
+    if not target_chat:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚙️ Set Target Chat ID", callback_data="ask_chat_id")]
+        ])
+        await message.reply_text(
+            "⚠️ **Target Chat Set Nahi Hai!**\n\n"
+            "Pehle neeche diye gaye button par click karke Channel/Group ID set karein, tabhi quiz upload hoga.",
+            reply_markup=keyboard
+        )
+        return
+
+    # Store file message reference
+    USER_FILES[user_id] = message
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Start Upload Quiz", callback_data="start_upload")],
+        [InlineKeyboardButton("⚙️ Change Chat ID", callback_data="ask_chat_id")]
+    ])
+
+    await message.reply_text(
+        f"📄 **File Received:** `{message.document.file_name}`\n"
+        f"🎯 **Target Chat:** `{target_chat}`\n\n"
+        f"Quiz upload shuru karne ke liye neeche button par click karein:",
+        reply_markup=keyboard
+    )
+
+@app.on_callback_query(filters.regex("start_upload"))
+async def start_upload_callback(client: Client, callback_query: CallbackQuery):
+    user_id = callback_query.from_user.id
+    target_chat = USER_CHAT_CONFIG.get(user_id)
+    doc_message = USER_FILES.get(user_id)
+
+    if not target_chat:
+        await callback_query.answer("❌ Target Chat Set Nahi Hai!", show_alert=True)
+        return
+
+    if not doc_message:
+        await callback_query.answer("❌ File nahi mili, please firse `.txt` file bhejayein.", show_alert=True)
+        return
+
+    await callback_query.message.edit_text("📥 Downloading TXT file...")
+    file_path = await doc_message.download()
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        await status_msg.edit_text("⚙️ Parsing Questions...")
+        await callback_query.message.edit_text("⚙️ Parsing Questions...")
         quizzes = parse_quiz_file(content)
 
         if not quizzes:
-            await status_msg.edit_text("❌ No valid questions found in file.")
+            await callback_query.message.edit_text("❌ File format galat hai ya koi question nahi mila.")
             os.remove(file_path)
             return
 
-        await status_msg.edit_text(f"🚀 Found **{len(quizzes)}** questions. Uploading to `{target_chat}`...")
+        await callback_query.message.edit_text(f"🚀 Found **{len(quizzes)}** questions. Uploading to `{target_chat}`...")
 
         success_count = 0
         for idx, q in enumerate(quizzes, start=1):
@@ -115,10 +187,10 @@ async def handle_quiz_upload(client: Client, message: Message):
                 print(f"Failed Q{idx}: {e}")
                 await asyncio.sleep(3)
 
-        await status_msg.edit_text(f"✅ Finished! Posted **{success_count}/{len(quizzes)}** Quizzes to `{target_chat}`.")
+        await callback_query.message.edit_text(f"✅ **Process Complete!**\nPosted **{success_count}/{len(quizzes)}** Quizzes to `{target_chat}`.")
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error: `{str(e)}`")
+        await callback_query.message.edit_text(f"❌ Error: `{str(e)}`")
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
