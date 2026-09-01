@@ -1,31 +1,35 @@
 import os
 import re
 import asyncio
+from threading import Thread
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# Credentials
-API_ID = int(os.environ.get("API_ID", "22470912"))
-API_HASH = os.environ.get("API_HASH", "511be78079ed5d4bd4c967bc7b5ee023")
+# --- FLASK DUMMY SERVER FOR RENDER HEALTH CHECK ---
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Quiz Uploader Bot is Alive!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
+
+# Start Flask in a background thread
+Thread(target=run_web, daemon=True).start()
+
+# --- PYROGRAM BOT LOGIC ---
+API_ID = int(os.environ.get("API_ID", "12345678"))
+API_HASH = os.environ.get("API_HASH", "your_api_hash")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")
 
 app = Client("quiz_uploader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Parsing Logic for TXT file
 def parse_quiz_file(file_content: str):
-    """
-    Parses TXT format:
-    Q 1). Question text
-    A) Option A
-    B) Option B
-    C) Option C
-    D) Option D
-    Ans: B
-    """
     quizzes = []
-    # Split by double newlines or question start
     blocks = re.split(r'\n\s*\n', file_content.strip())
-    
     option_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'a': 0, 'b': 1, 'c': 2, 'd': 3}
 
     for block in blocks:
@@ -38,14 +42,11 @@ def parse_quiz_file(file_content: str):
         correct_id = None
         
         for line in lines:
-            # Match Question
             if re.match(r'^(Q\s*\d*[\).:]?|Q:?)\s*', line, re.IGNORECASE):
                 question_text = re.sub(r'^(Q\s*\d*[\).:]?|Q:?)\s*', '', line, flags=re.IGNORECASE).strip()
-            # Match Options
             elif re.match(r'^[A-Da-d][\).:]\s*', line):
                 opt_text = re.sub(r'^[A-Da-d][\).:]\s*', '', line).strip()
                 options.append(opt_text)
-            # Match Answer
             elif re.match(r'^(Ans|Answer)[\).:]\s*', line, re.IGNORECASE):
                 ans_char = line.split(':')[-1].strip()
                 correct_id = option_map.get(ans_char, 0)
@@ -64,20 +65,18 @@ async def start_cmd(client: Client, message: Message):
     await message.reply_text(
         "**Quiz Uploader Bot Active!**\n\n"
         "**Usage:**\n"
-        "1. Send or upload a `.txt` quiz file here.\n"
-        "2. Caption or reply with command: `/upload <channel_username_or_id>`\n"
-        "Example: `/upload @mychannel`"
+        "1. Send `.txt` file here.\n"
+        "2. Caption / Command: `/upload @channel_username`"
     )
 
 @app.on_message(filters.document & filters.command("upload"))
 async def handle_quiz_upload(client: Client, message: Message):
     if len(message.command) < 2:
-        await message.reply_text("❌ Please specify Target Chat/Channel ID or Username.\nFormat: `/upload @channel_username`")
+        await message.reply_text("❌ Target channel username mention karo.\nFormat: `/upload @channel_username`")
         return
 
     target_chat = message.command[1]
 
-    # Validate Document
     if not message.document.file_name.endswith('.txt'):
         await message.reply_text("❌ Only `.txt` files supported.")
         return
@@ -93,11 +92,11 @@ async def handle_quiz_upload(client: Client, message: Message):
         quizzes = parse_quiz_file(content)
 
         if not quizzes:
-            await status_msg.edit_text("❌ No valid questions found in file format. Check structure.")
+            await status_msg.edit_text("❌ No valid questions found in file.")
             os.remove(file_path)
             return
 
-        await status_msg.edit_text(f"🚀 Found **{len(quizzes)}** questions. Starting upload to `{target_chat}`...")
+        await status_msg.edit_text(f"🚀 Found **{len(quizzes)}** questions. Uploading to `{target_chat}`...")
 
         success_count = 0
         for idx, q in enumerate(quizzes, start=1):
@@ -111,7 +110,6 @@ async def handle_quiz_upload(client: Client, message: Message):
                     is_anonymous=True
                 )
                 success_count += 1
-                # Flood control delay
                 await asyncio.sleep(2.5)
             except Exception as e:
                 print(f"Failed Q{idx}: {e}")
